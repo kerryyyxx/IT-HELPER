@@ -2,7 +2,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import hashlib
-
+import streamlit as st
 
 class SchoolAIDatabase:
     def __init__(self, db_name="school_ai.db"):
@@ -19,12 +19,13 @@ class SchoolAIDatabase:
     def init_db(self):
         conn = self.get_connection()
         cursor = conn.cursor()
-        # 基础表结构
+
+        # 1. 创建基础表
         cursor.execute('''CREATE TABLE IF NOT EXISTS users 
                          (username TEXT PRIMARY KEY, password TEXT, name TEXT, 
                           class_info TEXT, role TEXT, security_q TEXT, security_a TEXT)''')
 
-        # 检查并补齐安全字段
+        # 2. 检查并补齐安全字段
         cursor.execute("PRAGMA table_info(users)")
         columns = [column[1] for column in cursor.fetchall()]
         if 'security_q' not in columns:
@@ -32,6 +33,7 @@ class SchoolAIDatabase:
         if 'security_a' not in columns:
             cursor.execute("ALTER TABLE users ADD COLUMN security_a TEXT DEFAULT '默认答案'")
 
+        # 3. 创建业务表
         cursor.execute('''CREATE TABLE IF NOT EXISTS chats 
                          (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, 
                           question TEXT, answer TEXT, timestamp DATETIME)''')
@@ -42,11 +44,20 @@ class SchoolAIDatabase:
                          (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, 
                           filename TEXT, download_time DATETIME)''')
 
-        # 管理员初始化：密码 admin123 也会被加密存储
-        admin_p = self._hash_password('MySecret999#')
+        # --- 核心安全修改点 ---
+        import streamlit as st  # 确保函数内或文件顶部有这一行
+
+        # 从云端 Secrets 读取真正的强密码，如果没设置，本地默认用 admin123
+        raw_admin_p = st.secrets.get("ADMIN_PASSWORD", "admin123")
+        admin_p = self._hash_password(raw_admin_p)
+
+        # 插入或忽略 admin 账号
         cursor.execute(
             "INSERT OR IGNORE INTO users VALUES ('admin', ?, '管理员', '全校中心', 'admin', '默认', '默认')",
             (admin_p,))
+
+        # 强制更新密码：确保云端 Secrets 里的密码始终覆盖数据库旧值
+        cursor.execute("UPDATE users SET password = ? WHERE username = 'admin'", (admin_p,))
 
         conn.commit()
         conn.close()
