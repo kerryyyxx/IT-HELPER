@@ -1,182 +1,163 @@
 import sqlite3
-import bcrypt
+import pandas as pd
+from datetime import datetime
+import hashlib
+
 
 class SchoolAIDatabase:
-    def __init__(self, db_name="school_system.db"):
-        self.conn = sqlite3.connect(db_name, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        self.create_tables()
+    def __init__(self, db_name="school_ai.db"):
+        self.db_name = db_name
+        self.init_db()
 
-    def create_tables(self):
-        # 用户表：包含密保问题和答案
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                username TEXT PRIMARY KEY,
-                password BLOB,  -- 注意：加密后的密码存为二进制格式
-                name TEXT,
-                class_id TEXT,
-                security_q TEXT,
-                security_a TEXT,
-                role TEXT
-            )
-        """)
-        # 课件资料表
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
-                data BLOB,
-                upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # 下载日志表
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS download_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
-                material_id INTEGER,
-                download_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # 聊天记录表
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
-                question TEXT,
-                answer TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.commit()
-
-    # --- 🔐 安全核心方法 ---
+    def get_connection(self):
+        return sqlite3.connect(self.db_name)
 
     def _hash_password(self, password):
-        """将明文密码转化为加盐的哈希值"""
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode('utf-8'), salt)
+        """私有方法：将明文密码转换为哈希乱码"""
+        return hashlib.sha256(password.encode()).hexdigest()
 
-    def _verify_password(self, password, hashed_pw):
-        """对比明文密码与数据库中的哈希值"""
+    def init_db(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        # 基础表结构
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users 
+                         (username TEXT PRIMARY KEY, password TEXT, name TEXT, 
+                          class_info TEXT, role TEXT, security_q TEXT, security_a TEXT)''')
+
+        # 检查并补齐安全字段
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'security_q' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN security_q TEXT DEFAULT '默认问题'")
+        if 'security_a' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN security_a TEXT DEFAULT '默认答案'")
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS chats 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, 
+                          question TEXT, answer TEXT, timestamp DATETIME)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS materials 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT, 
+                          file_data BLOB, upload_time DATETIME, description TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS downloads 
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, 
+                          filename TEXT, download_time DATETIME)''')
+
+        # 管理员初始化：密码 admin123 也会被加密存储
+        admin_p = self._hash_password('MySecret999#')
+        cursor.execute(
+            "INSERT OR IGNORE INTO users VALUES ('admin', ?, '管理员', '全校中心', 'admin', '默认', '默认')",
+            (admin_p,))
+
+        conn.commit()
+        conn.close()
+
+    def login(self, u, p):
+        conn = self.get_connection()
+        hp = self._hash_password(p)  # 对输入的密码进行哈希后再对比
         try:
-            return bcrypt.checkpw(password.encode('utf-8'), hashed_pw)
-        except Exception:
-            return False
+            res = conn.execute("SELECT role, name FROM users WHERE username=? AND password=?", (u, hp)).fetchone()
+            return res
+        except:
+            return None
+        finally:
+            conn.close()
 
-    # --- 👤 用户管理 ---
-
-    def register_user(self, username, password, name, class_id, security_q, security_a, role='student'):
-        hashed = self._hash_password(password)
+    def register_user(self, u, p, n, c, sq, sa):
+        conn = self.get_connection()
+        hp = self._hash_password(p)  # 加密存储
         try:
-            self.cursor.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (username, hashed, name, class_id, security_q, security_a, role)
-            )
-            self.conn.commit()
+            conn.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?)", (u, hp, n, c, 'student', sq, sa))
+            conn.commit()
             return True
-        except sqlite3.IntegrityError:
+        except:
             return False
+        finally:
+            conn.close()
 
-    def login(self, username, password):
-        self.cursor.execute("SELECT password, role, name FROM users WHERE username=?", (username,))
-        result = self.cursor.fetchone()
-        if result and self._verify_password(password, result[0]):
-            return result[1], result[2]  # 返回 role 和 name
-        return None
+    def reset_student_password(self, username, new_password):
+        conn = self.get_connection()
+        hp = self._hash_password(new_password)  # 加密重置
+        try:
+            conn.execute("UPDATE users SET password = ? WHERE username = ?", (hp, username))
+            conn.commit()
+            return True
+        except:
+            return False
+        finally:
+            conn.close()
 
-    def update_password(self, username, new_password):
-        hashed = self._hash_password(new_password)
-        self.cursor.execute("UPDATE users SET password=? WHERE username=?", (hashed, username))
-        self.conn.commit()
-        return True
-
-    def verify_security(self, username, question, answer):
-        """验证密保问题和答案是否匹配"""
-        self.cursor.execute(
-            "SELECT 1 FROM users WHERE username=? AND security_q=? AND security_a=?", 
-            (username, question, answer)
-        )
-        return self.cursor.fetchone() is not None
-
-    def get_user_security_q(self, username):
-        """获取用户的密保问题"""
-        self.cursor.execute("SELECT security_q FROM users WHERE username=?", (username,))
-        res = self.cursor.fetchone()
-        return res[0] if res else None
-
-    # --- 📊 教师管理看板数据 ---
-
+    # --- 以下方法保持不变 ---
     def get_all_classes(self):
-        self.cursor.execute("SELECT DISTINCT class_id FROM users WHERE role='student'")
-        return [row[0] for row in self.cursor.fetchall()]
+        conn = self.get_connection()
+        res = [r[0] for r in conn.execute("SELECT DISTINCT class_info FROM users WHERE role='student'").fetchall()]
+        conn.close()
+        return res
 
-    def get_students_by_class(self, class_id):
-        """获取班级学生列表及提问总数"""
-        query = """
-            SELECT u.name, u.class_id, u.username, COUNT(c.id) 
-            FROM users u
-            LEFT JOIN chat_history c ON u.username = c.username
-            WHERE u.class_id = ? AND u.role = 'student'
-            GROUP BY u.username
-        """
-        self.cursor.execute(query, (class_id,))
-        return self.cursor.fetchall()
+    def get_students_by_class(self, class_name):
+        conn = self.get_connection()
+        query = '''SELECT u.name, u.class_info, u.username, COUNT(c.id) 
+                   FROM users u LEFT JOIN chats c ON u.username = c.username 
+                   WHERE u.class_info = ? AND u.role = 'student'
+                   GROUP BY u.username'''
+        res = conn.execute(query, (class_name,)).fetchall()
+        conn.close()
+        return res
 
-    def get_class_stats(self, class_id):
-        """统计班级概览：总人数、总提问数"""
-        self.cursor.execute("SELECT COUNT(*) FROM users WHERE class_id=? AND role='student'", (class_id,))
-        total_stu = self.cursor.fetchone()[0]
-        self.cursor.execute(
-            "SELECT COUNT(c.id) FROM chat_history c JOIN users u ON c.username=u.username WHERE u.class_id=?", 
-            (class_id,)
-        )
-        total_chats = self.cursor.fetchone()[0]
-        return total_stu, total_chats
+    def update_student_info(self, username, new_name, new_class):
+        conn = self.get_connection()
+        try:
+            conn.execute("UPDATE users SET name = ?, class_info = ? WHERE username = ?",
+                         (new_name, new_class, username))
+            conn.commit()
+            return True
+        except:
+            return False
+        finally:
+            conn.close()
 
-    # --- 📥 课件管理 ---
+    def save_chat(self, u, q, a):
+        conn = self.get_connection()
+        conn.execute("INSERT INTO chats (username, question, answer, timestamp) VALUES (?,?,?,?)",
+                     (u, q, a, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
 
-    def upload_material(self, filename, data):
-        self.cursor.execute("INSERT INTO materials (filename, data) VALUES (?, ?)", (filename, data))
-        self.conn.commit()
+    def get_chat_history(self, u):
+        conn = self.get_connection()
+        res = conn.execute("SELECT question, answer, timestamp FROM chats WHERE username=? ORDER BY timestamp ASC",
+                           (u,)).fetchall()
+        conn.close()
+        return res
+
+    def get_student_downloads(self, u):
+        conn = self.get_connection()
+        res = conn.execute("SELECT filename, download_time FROM downloads WHERE username=? ORDER BY download_time DESC",
+                           (u,)).fetchall()
+        conn.close()
+        return res
+
+    def upload_material(self, fn, fd, ds):
+        conn = self.get_connection()
+        conn.execute("INSERT INTO materials (filename, file_data, upload_time, description) VALUES (?,?,?,?)",
+                     (fn, fd, datetime.now().strftime("%Y-%m-%d %H:%M"), ds))
+        conn.commit()
+        conn.close()
 
     def get_all_materials(self):
-        self.cursor.execute("SELECT id, filename, upload_time FROM materials ORDER BY upload_time DESC")
-        return self.cursor.fetchall()
+        conn = self.get_connection()
+        res = conn.execute(
+            "SELECT id, filename, upload_time, description FROM materials ORDER BY upload_time DESC").fetchall()
+        conn.close()
+        return res
 
-    def get_material_data(self, m_id):
-        self.cursor.execute("SELECT filename, data FROM materials WHERE id=?", (m_id,))
-        return self.cursor.fetchone()
+    def get_material_data(self, mid):
+        conn = self.get_connection()
+        res = conn.execute("SELECT filename, file_data FROM materials WHERE id=?", (mid,)).fetchone()
+        conn.close()
+        return res
 
-    def delete_material(self, m_id):
-        self.cursor.execute("DELETE FROM materials WHERE id=?", (m_id,))
-        self.conn.commit()
-
-    def log_download(self, username, m_id):
-        self.cursor.execute("INSERT INTO download_logs (username, material_id) VALUES (?, ?)", (username, m_id))
-        self.conn.commit()
-
-    def get_student_downloads(self, username):
-        query = """
-            SELECT m.filename, d.download_time 
-            FROM download_logs d
-            JOIN materials m ON d.material_id = m.id
-            WHERE d.username = ?
-            ORDER BY d.download_time DESC
-        """
-        self.cursor.execute(query, (username,))
-        return self.cursor.fetchall()
-
-    # --- 💬 聊天记录 ---
-
-    def save_chat(self, username, question, answer):
-        self.cursor.execute("INSERT INTO chat_history (username, question, answer) VALUES (?, ?, ?)", 
-                           (username, question, answer))
-        self.conn.commit()
-
-    def get_chat_history(self, username):
-        self.cursor.execute("SELECT question, answer, timestamp FROM chat_history WHERE username=? ORDER BY timestamp ASC", (username,))
-        return self.cursor.fetchall()
-
-    def __del__(self):
-        self.conn.close()
+    def delete_material(self, mid):
+        conn = self.get_connection()
+        conn.execute("DELETE FROM materials WHERE id=?", (mid,))
+        conn.commit()
+        conn.close()

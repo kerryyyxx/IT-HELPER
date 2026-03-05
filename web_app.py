@@ -2,199 +2,240 @@ import streamlit as st
 from database import SchoolAIDatabase
 from openai import OpenAI
 import httpx
+from styles import apply_styles
 
-# --- 1. 配置 ---
-st.set_page_config(page_title="信息技术 AI 云助手", layout="wide")
+# --- 1. 初始化 ---
 db = SchoolAIDatabase()
+client = OpenAI(api_key=st.secrets["API_KEY"], base_url=st.secrets["BASE_URL"], http_client=httpx.Client(verify=False))
 
-client = OpenAI(
-    api_key=st.secrets["API_KEY"], 
-    base_url=st.secrets["BASE_URL"],
-    http_client=httpx.Client(verify=False)
-)
-SYSTEM_PROMPT = "你是一位资深信息技术老师。回答学生问题时，请先肯定他们的思考，多用引导式提问，解释逻辑而非单纯提供代码，鼓励他们动手实践。"
+for key in ["logged_in", "menu", "msgs", "user_info", "forgot_step", "reset_un"]:
+    if key not in st.session_state:
+        if key == "logged_in":
+            st.session_state[key] = False
+        elif key == "msgs":
+            st.session_state[key] = []
+        elif key == "user_info":
+            st.session_state[key] = {}
+        elif key == "forgot_step":
+            st.session_state[key] = 0
+        else:
+            st.session_state[key] = ""
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.user_info = None
-if "current_chat" not in st.session_state:
-    st.session_state.current_chat = []
+apply_styles()
 
-# --- 2. 展示组件 ---
-def show_list_history(history, prefix):
-    if not history:
-        st.info("目前还没有记录。")
-        return
-    history_rev = list(reversed(history))
-    options = [f"#{len(history_rev)-i} | {t[5:16]} | {q[:12]}..." for i, (q, a, t) in enumerate(history_rev)]
-    l_col, r_col = st.columns([1, 2.5])
-    with l_col:
-        sel = st.radio("选择记录", options, label_visibility="collapsed", key=f"{prefix}_radio")
-        idx = options.index(sel)
-    with r_col:
-        q, a, t = history_rev[idx]
-        st.markdown(f"##### 🕒 时间: {t}")
-        with st.chat_message("user"): st.markdown(q)
-        with st.chat_message("assistant"): st.markdown(a)
-
-# --- 3. 弹窗组件 (修复点：确保这些函数在主循环之前定义) ---
-
-@st.dialog("🔑 找回密码")
-def forgot_pwd_dialog():
-    uname = st.text_input("用户名", key="f_u")
-    if uname:
-        q = db.get_user_security_q(uname)
-        if q:
-            st.info(f"密保问题：{q}")
-            ans = st.text_input("答案", key="f_a")
-            new_p = st.text_input("新密码", type="password", key="f_p")
-            if st.button("验证重置", key="f_b"):
-                if db.verify_security(uname, q, ans):
-                    db.update_password(uname, new_p)
-                    st.success("成功！请重新登录。")
-                else: st.error("答案错误")
-
-@st.dialog("📜 学生档案", width="large")
-def show_student_profile(username, name):
-    st.write(f"### {name} 的学习档案")
-    t1, t2 = st.tabs(["💬 对话记录", "📥 课件下载"])
-    with t1:
-        history = db.get_chat_history(username)
-        show_list_history(history, f"profile_hist_{username}")
-    with t2:
-        dls = db.get_student_downloads(username)
-        if dls:
-            for fn, dt in dls: st.write(f"✅ {fn}  *(时间: {dt})*")
-        else: st.info("该生暂无下载记录")
-
-@st.dialog("🔑 管理员修改密码")
-def admin_reset_pwd_dialog(username, name):
-    st.write(f"正在重置学生 **{name}** 的密码")
-    new_p = st.text_input("设置新密码", type="password", key=f"adm_pw_input_{username}")
-    if st.button("确认修改", key=f"adm_pw_btn_{username}"):
-        db.update_password(username, new_p)
-        st.success(f"学生 {name} 的密码已重置！")
-
-# --- 4. 侧边栏 ---
+# --- 2. 侧边栏 ---
 with st.sidebar:
-    st.title("🍀 账户中心")
+    st.markdown("<h2 style='padding:15px 5px;'>🍀 IT Helper</h2>", unsafe_allow_html=True)
+
     if not st.session_state.logged_in:
-        t1, t2 = st.tabs(["登录", "注册"])
-        with t1:
-            u, p = st.text_input("用户名", key="l_u"), st.text_input("密码", type="password", key="l_p")
-            if st.button("登录", use_container_width=True, key="l_b"):
-                res = db.login(u, p)
-                if res:
-                    st.session_state.logged_in = True
-                    st.session_state.user_info = {"username": u, "role": res[0], "name": res[1]}
-                    st.rerun()
-            if st.button("忘记密码？", key="f_link"): forgot_pwd_dialog()
-        with t2:
-            nu, nn = st.text_input("新用户名", key="r_u"), st.text_input("真实姓名", key="r_n")
-            c1, c2 = st.columns(2)
-            g_v = c1.text_input("级", key="r_g")
-            c_v = c2.text_input("班", key="r_c")
-            np, nq, na = st.text_input("密码", type="password", key="r_p"), st.text_input("密保问题", key="r_q"), st.text_input("答案", key="r_a")
-            if st.button("提交注册", key="reg_b"):
-                db.register_user(nu, np, nn, f"{g_v}级{c_v}班", nq, na, "student")
-                st.success("注册成功！")
-    else:
-        st.success(f"在线：{st.session_state.user_info['name']}")
-        if st.button("退出登录", use_container_width=True, key="logout_b"):
-            st.session_state.logged_in = False; st.session_state.current_chat = []; st.rerun()
+        # --- 找回密码流程 ---
+        if st.session_state.forgot_step > 0:
+            st.markdown("### 🔑 找回密码")
+            if st.session_state.forgot_step == 1:
+                un = st.text_input("请输入账号", value=st.session_state.reset_un)
+                if st.button("获取密保问题", use_container_width=True):
+                    conn = db.get_connection()
+                    res = conn.execute("SELECT security_q, security_a FROM users WHERE username=?", (un,)).fetchone()
+                    conn.close()
+                    if res:
+                        st.session_state.reset_un = un
+                        st.session_state.temp_q = res[0]
+                        st.session_state.temp_a = res[1]
+                    else:
+                        st.error("账号不存在")
 
-# --- 5. 主界面 ---
-if not st.session_state.logged_in:
-    st.info("👋 欢迎！请先在左侧登录。")
-else:
-    user = st.session_state.user_info
-    
-    # 【学生端逻辑保持沉底优化】
-    if user['role'] == 'student':
-        t_chat, t_hist, t_file = st.tabs(["💬 AI 咨询", "📚 历史回顾", "📥 课件下载"])
-        with t_chat:
-            h_c1, h_c2 = st.columns([5, 1])
-            h_c1.subheader("💡 探索信息技术")
-            if h_c2.button("🧹 清空"):
-                st.session_state.current_chat = []; st.rerun()
-            for m in st.session_state.current_chat:
-                with st.chat_message(m["role"]): st.markdown(m["content"])
-        with t_hist: show_list_history(db.get_chat_history(user['username']), "stu_hist")
-        with t_file:
-            @st.fragment(run_every=5)
-            def refresh_mats():
-                mats = db.get_all_materials()
-                for mid, fn, ut in mats:
-                    c_n, c_d = st.columns([3, 1])
-                    c_n.write(f"📄 {fn}")
-                    _, data = db.get_material_data(mid)
-                    if c_d.download_button("下载", data=data, file_name=fn, key=f"d_{mid}"):
-                        db.log_download(user['username'], mid)
-            refresh_mats()
-        
-        # 学生端输入逻辑
-        if prompt := st.chat_input("在此输入你的疑问..."):
-            st.session_state.current_chat.append({"role": "user", "content": prompt})
-            st.rerun()
-        if st.session_state.current_chat and st.session_state.current_chat[-1]["role"] == "user":
-            with t_chat:
-                with st.chat_message("assistant"):
-                    res_p, full_res = st.empty(), ""
-                    msgs = [{"role": "system", "content": SYSTEM_PROMPT}] + st.session_state.current_chat
-                    stream = client.chat.completions.create(model="ep-20260224161941-nqw6c", messages=msgs, stream=True)
-                    for chunk in stream:
-                        if chunk.choices[0].delta.content:
-                            full_res += chunk.choices[0].delta.content
-                            res_p.markdown(full_res + "▌")
-                    res_p.markdown(full_res)
-                    db.save_chat(user['username'], st.session_state.current_chat[-1]["content"], full_res)
-                    st.session_state.current_chat.append({"role": "assistant", "content": full_res})
+                if "temp_q" in st.session_state:
+                    st.info(f"问题：{st.session_state.temp_q}")
+                    ans = st.text_input("输入答案")
+                    if st.button("验证回答", use_container_width=True, type="primary"):
+                        if ans == st.session_state.temp_a:
+                            st.session_state.forgot_step = 2
+                            st.rerun()
+                        else:
+                            st.error("答案错误")
+
+            elif st.session_state.forgot_step == 2:
+                new_p = st.text_input("设定新密码", type="password")
+                if st.button("确认修改", use_container_width=True, type="primary"):
+                    if db.reset_student_password(st.session_state.reset_un, new_p):
+                        st.success("重置成功！请重新登录")
+                        st.session_state.forgot_step = 0
+                        st.rerun()
+
+            if st.button("返回登录"):
+                st.session_state.forgot_step = 0
+                st.rerun()
+
+        else:
+            t1, t2 = st.tabs(["🔐 登录", "📝 注册"])
+            with t1:
+                u = st.text_input("账号", key="l_u")
+                p = st.text_input("密码", type="password", key="l_p")
+                if st.button("进入系统", type="primary", use_container_width=True):
+                    res = db.login(u, p)
+                    if res:
+                        st.session_state.user_info = {"username": u, "role": res[0], "name": res[1]}
+                        st.session_state.logged_in = True
+                        st.session_state.menu = "👨‍🏫 班级看板" if res[0] == 'admin' else "💡 灵感对话助手"
+                        st.rerun()
+                    else:
+                        st.error("❌ 账号或密码错误")
+
+                # 这里去掉了 variant="ghost" 避免报错
+                if st.button("❓ 忘记密码？点击找回", use_container_width=True):
+                    st.session_state.forgot_step = 1
                     st.rerun()
 
-    # 【老师端逻辑修复】
-    elif user['role'] == 'admin':
-        t_m, t_f = st.tabs(["👨‍🏫 班级看板", "📤 课件管理"])
-        
-        with t_f:
-            st.subheader("📤 发布课件")
-            f = st.file_uploader("上传文件", key="adm_f")
-            if f and st.button("确认发布", key="adm_up"):
-                db.upload_material(f.name, f.read()); st.success("已发布"); st.rerun()
-            st.divider()
-            for mid, fn, ut in db.get_all_materials():
-                c1, c2, c3 = st.columns([3, 2, 1])
-                c1.write(f"📄 {fn}"); c2.caption(ut)
-                with c3.popover("撤回"):
-                    if st.button("确认", key=f"del_{mid}"):
-                        db.delete_material(mid); st.rerun()
-
-        with t_m:
-            all_c = db.get_all_classes()
-            if all_c:
-                target_c = st.selectbox("选择管理班级", sorted(all_c), key="adm_cl_sel")
-                s_total, c_total = db.get_class_stats(target_c)
-                k1, k2, k3 = st.columns(3)
-                k1.metric("班级人数", s_total)
-                k2.metric("互动总量", c_total)
-                k3.metric("人均提问", round(c_total/max(s_total,1), 1))
-                
+            with t2:
+                ru = st.text_input("设定账号");
+                rn = st.text_input("真实姓名")
+                c1, c2 = st.columns(2)
+                g = c1.number_input("年级", 2020, 2030, 2024);
+                b = c2.number_input("班级", 1, 50, 1)
+                rp = st.text_input("设定密码", type="password")
                 st.divider()
-                # 列表表头
-                h1, h2, h3, h4 = st.columns([1, 1, 1, 1.5])
-                h1.write("**姓名**"); h2.write("**班级**"); h3.write("**互动**"); h4.write("**操作**")
-                
-                # 学生列表记录
-                for name, clz, uname, cnt in db.get_students_by_class(target_c):
-                    r1, r2, r3, r4 = st.columns([1, 1, 1, 1.5])
-                    r1.write(name)
-                    r2.write(clz)
-                    r3.write(f"📝 {cnt}")
-                    
-                    # 在操作列放两个按钮
-                    b_col1, b_col2 = r4.columns(2)
-                    if b_col1.button("📜 档案", key=f"btn_prof_{uname}"):
-                        show_student_profile(uname, name)
-                    if b_col2.button("🔑 改密", key=f"btn_reset_{uname}"):
-                        admin_reset_pwd_dialog(uname, name)
-            else:
-                st.warning("暂无学生数据")
+                rq = st.text_input("密保问题 (必填)");
+                ra = st.text_input("密保答案 (必填)")
+                if st.button("提交注册", use_container_width=True):
+                    if all([ru, rn, rp, rq, ra]):
+                        if db.register_user(ru, rp, rn, f"{g}级{b}班", rq, ra):
+                            st.success("✅ 注册成功！")
+                        else:
+                            st.error("账号已存在")
+                    else:
+                        st.warning("请填满所有信息")
+    else:
+        u_info = st.session_state.user_info
+        st.markdown(f"👤 **{u_info['name']}**")
+        items = ["👨‍🏫 班级看板", "📢 发布动态"] if u_info['role'] == 'admin' else ["💡 灵感对话助手", "📁 数字化教学资源"]
+        for item in items:
+            if st.button(item, type="primary" if st.session_state.menu == item else "secondary",
+                         use_container_width=True):
+                st.session_state.menu = item;
+                st.rerun()
+        if st.button("🚪 退出登录", use_container_width=True):
+            st.session_state.clear();
+            st.rerun()
+
+# --- 3. 主界面内容 ---
+if st.session_state.logged_in:
+    user, choice = st.session_state.user_info, st.session_state.menu
+
+    if user['role'] == 'admin':
+        if choice == "👨‍🏫 班级看板":
+            st.subheader("📊 班级看板")
+            clzs = db.get_all_classes()
+            if clzs:
+                target = st.selectbox("筛选班级", sorted(clzs))
+                st.divider()
+                h = st.columns([1, 1, 0.8, 1, 1])
+                h[0].write("**姓名**");
+                h[1].write("**班级**");
+                h[2].write("**互动**");
+                h[3].write("**档案**");
+                h[4].write("**修改**")
+                for n, c, un, cnt in db.get_students_by_class(target):
+                    r = st.columns([1, 1, 0.8, 1, 1])
+                    r[0].write(n);
+                    r[1].write(c);
+                    r[2].write(f"💬 {cnt}")
+                    if r[3].button("📂 档案", key=f"v_{un}"): st.session_state.active_stu = (un, n)
+                    if r[4].button("🔧 修改", key=f"ed_{un}"): st.session_state.editing_stu = {"un": un, "n": n, "c": c}
+
+                if "editing_stu" in st.session_state:
+                    with st.container(border=True):
+                        e = st.session_state.editing_stu
+                        st.markdown(f"#### 🛠️ 修改: {e['n']}")
+                        new_n = st.text_input("姓名", value=e['n'])
+                        new_c = st.text_input("班级", value=e['c'])
+                        new_p = st.text_input("重设密码 (可选)", type="password")
+                        if st.button("保存修改", type="primary"):
+                            db.update_student_info(e['un'], new_n, new_c)
+                            if new_p: db.reset_student_password(e['un'], new_p)
+                            st.success("已更新");
+                            del st.session_state.editing_stu;
+                            st.rerun()
+                        if st.button("取消"): del st.session_state.editing_stu; st.rerun()
+
+                if "active_stu" in st.session_state:
+                    aun, aname = st.session_state.active_stu
+                    st.divider()
+                    st.markdown(f"### 📁 学生档案：{aname}")
+                    t_chat, t_down = st.tabs(["💬 互动详情", "📥 下载足迹"])
+                    with t_chat:
+                        history = db.get_chat_history(aun)
+                        if history:
+                            for q, a, t in reversed(history):
+                                with st.expander(f"🕒 {t} | {q[:15]}..."):
+                                    st.write(f"**问：** {q}\n\n**答：** {a}")
+                        else:
+                            st.info("暂无记录")
+                    with t_down:
+                        dls = db.get_student_downloads(aun)
+                        if dls:
+                            st.table(dls)
+                        else:
+                            st.info("无下载")
+                    if st.button("关闭档案"): del st.session_state.active_stu; st.rerun()
+
+        elif choice == "📢 发布动态":
+            st.subheader("📢 资源发布")
+            with st.form("pub"):
+                ds = st.text_area("老师讲内容 (寄语)")
+                f = st.file_uploader("附件")
+                if st.form_submit_button("立即发布"):
+                    if f: db.upload_material(f.name, f.read(), ds); st.success("成功")
+            st.divider()
+            for mid, fn, ut, ds in db.get_all_materials():
+                with st.container(border=True):
+                    st.write(f"📄 **{fn}** | {ut}")
+                    if st.button("🗑️ 撤回", key=f"del_{mid}"): db.delete_material(mid); st.rerun()
+
+    else:
+        if choice == "💡 灵感对话助手":
+            with st.expander("📜 咨询回顾", expanded=False):
+                for q, a, t in reversed(db.get_chat_history(user['username'])):
+                    with st.expander(f"🕒 {t} | {q[:15]}..."):
+                        st.write(f"**问：** {q}\n\n**答：** {a}")
+
+            for m in st.session_state.msgs:
+                with st.chat_message(m["role"]): st.markdown(m["content"])
+
+            if pr := st.chat_input("输入你的疑问..."):
+                st.session_state.msgs.append({"role": "user", "content": pr})
+                with st.chat_message("user"):
+                    st.markdown(pr)
+                with st.chat_message("assistant"):
+                    think = st.empty();
+                    think.info("🤖 AI 老师正在认真思考中...")
+                    res_area = st.empty();
+                    full_r = ""
+                    try:
+                        stream = client.chat.completions.create(
+                            model="ep-20260224161941-nqw6c",
+                            messages=[{"role": "system", "content": "你是一位资深IT老师"}] + st.session_state.msgs,
+                            stream=True
+                        )
+                        for chunk in stream:
+                            if chunk.choices[0].delta.content:
+                                think.empty()
+                                full_r += chunk.choices[0].delta.content
+                                res_area.markdown(full_r + "▌")
+                        res_area.markdown(full_r)
+                        db.save_chat(user['username'], pr, full_r)
+                        st.session_state.msgs.append({"role": "assistant", "content": full_r})
+                    except:
+                        st.error("AI 接口连接失败")
+
+        elif choice == "📁 数字化教学资源":
+            st.subheader("📁 资源中心")
+            if st.button("🔄 刷新", type="primary", use_container_width=True): st.rerun()
+            for mid, fn, ut, ds in db.get_all_materials():
+                with st.container(border=True):
+                    st.markdown(f"### 📄 {fn}")
+                    st.markdown(f'<div class="teacher-note-box"><b>💡 老师讲内容：</b><br>{ds}</div>',
+                                unsafe_allow_html=True)
+                    _, fd = db.get_material_data(mid)
+                    st.download_button("📥 下载", fd, fn, key=f"dl_{mid}")
+else:
+    st.info("👋 请登录。如有问题请咨询管理员！")
