@@ -4,6 +4,14 @@ from openai import OpenAI
 import httpx
 from styles import apply_styles
 
+
+# 必须放在所有 st.xxx 命令的最前面！
+st.set_page_config(
+    page_title="BitBite", # 浏览器标签页显示的标题
+    page_icon="👻",                         # 浏览器标签页显示的图标，可以是 Emoji 或图片 URL
+    layout="wide",                         # 页面布局：wide (宽屏) 或 centered (居中)
+    initial_sidebar_state="expanded"       # 侧边栏默认状态：expanded (展开) 或 collapsed (收起)
+)
 # --- 1. 初始化 ---
 db = SchoolAIDatabase()
 client = OpenAI(api_key=st.secrets["API_KEY"], base_url=st.secrets["BASE_URL"], http_client=httpx.Client(verify=False))
@@ -25,7 +33,7 @@ apply_styles()
 
 # --- 2. 侧边栏 ---
 with st.sidebar:
-    st.markdown("<h2 style='padding:15px 5px;'>🍀 IT Helper</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='padding:15px 5px;'>👻 BitBite IT Assistant</h2>", unsafe_allow_html=True)
 
     if not st.session_state.logged_in:
         # --- 找回密码流程 ---
