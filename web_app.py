@@ -205,15 +205,30 @@ if st.session_state.logged_in:
                 st.session_state.msgs.append({"role": "user", "content": pr})
                 with st.chat_message("user"):
                     st.markdown(pr)
+
                 with st.chat_message("assistant"):
-                    think = st.empty();
-                    think.info("🤖 AI 老师正在认真思考中...")
-                    res_area = st.empty();
+                    think = st.empty()
+                    think.info("🤖 AI 助教正在精准定位问题...")
+                    res_area = st.empty()
                     full_r = ""
+
+                    # --- 1. 设置 Gemini 风格的系统指令 ---
+                    sys_prompt = (
+                        "你是资深IT助教Gemini。当学生需求模糊（如‘我要写代码’）时，请按以下逻辑回复：\n"
+                        "1. 肯定鼓励：简单表扬学生的行动力。\n"
+                        "2. 给出选项：列举3个常见的入门方向（如：Python小游戏、数据爬虫、简单的网页）。\n"
+                        "3. 提供模版：引导学生按‘我想做什么+输入是什么+预期结果’的格式提问。\n"
+                        "原则：保持在500字内，不直接给代码，只做路径引导。"
+                    )
+
+                    # --- 2. 组合消息：灵魂指令 + 最近12条历史记录（约6轮对话） ---
+                    # 这样既保证了项目连续性，又不会让模型因为上下文太长而变笨或变贵
+                    current_context = [{"role": "system", "content": sys_prompt}] + st.session_state.msgs[-12:]
+
                     try:
                         stream = client.chat.completions.create(
-                            model="ep-20260224161941-nqw6c",
-                            messages=[{"role": "system", "content": "你是一位资深IT老师"}] + st.session_state.msgs,
+                            model="THUDM/glm-4-9b-chat",  # 替换为硅基流动的免费模型
+                            messages=current_context,
                             stream=True
                         )
                         for chunk in stream:
@@ -224,8 +239,9 @@ if st.session_state.logged_in:
                         res_area.markdown(full_r)
                         db.save_chat(user['username'], pr, full_r)
                         st.session_state.msgs.append({"role": "assistant", "content": full_r})
-                    except:
-                        st.error("AI 接口连接失败")
+                    except Exception as e:
+                        # 打印出具体的错误，方便我们调试
+                        st.error(f"AI 接口连接失败：{str(e)}")
 
         elif choice == "📁 数字化教学资源":
             st.subheader("📁 资源中心")
