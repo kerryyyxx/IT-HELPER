@@ -235,7 +235,7 @@ if st.session_state.logged_in:
 
                     try:
                         stream = client.chat.completions.create(
-                            model="THUDM/GLM-4.1V-9B-Thinking",  # 替换为硅基流动的免费模型
+                            model="THUDM/glm-4-9b-chat",  # 替换为硅基流动的免费模型
                             messages=current_context,
                             stream=True
                         )
